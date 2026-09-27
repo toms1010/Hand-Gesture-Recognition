@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.venv-1/
+exports/
+settings.json
+autosave.json
+app.log
+.DS_Store

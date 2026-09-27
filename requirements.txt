@@ -1,0 +1,5 @@
+# Runtime dependencies (only what the app actually imports).
+mediapipe>=1.0.0      # hand tracking (HandLandmarker Tasks API)
+opencv-python>=4.8    # camera capture, rendering, UI overlays
+numpy>=1.26           # geometry / image math
+Pillow>=10            # Tkinter desktop GUI image display (ImageTk)
