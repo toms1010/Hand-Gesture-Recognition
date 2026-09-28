@@ -212,9 +212,12 @@ class StudioApp:
         elif key in (ord('x'), ord('X')):
             self.export_png()
         elif key in (ord('+'), ord('=')):
-            self.controller.brush_size = min(50, self.controller.brush_size + 1)
+            self.controller.brush_size = min(100, self.controller.brush_size + 1)
         elif key in (ord('-'), ord('_')):
             self.controller.brush_size = max(1, self.controller.brush_size - 1)
+        elif key in (127, 8):  # Delete / Backspace: drop most recent item
+            if self.canvas.items:
+                self.canvas.delete_item(len(self.canvas.items) - 1)
         elif ord('1') <= key <= ord('6'):
             self.controller.brush_color = PALETTE[key - ord('1')]
         else:

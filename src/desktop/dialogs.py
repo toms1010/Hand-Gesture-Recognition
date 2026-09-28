@@ -264,7 +264,7 @@ KEYBOARD
   Ctrl+Z .... Undo            Ctrl+Y / Ctrl+Shift+Z . Redo
   Ctrl+S .... Save project    Ctrl+O ............ Open project
   Ctrl+E .... Export JPG      Ctrl+N ............ New canvas
-  C ......... Clear           Del ............... Delete selected
+  C ......... Clear           Del / Backspace ... Delete selected
   P / B ..... Pencil/Brush    L / O / R / T ..... Shapes
   E / V ..... Eraser/Select   N ................. Cycle shape
   Space ..... Stamp           D / H / S ......... Debug/Help/Settings
@@ -273,6 +273,7 @@ KEYBOARD
   Tab ....... Cycle tools     F11 ............... Fullscreen
   Ctrl+Wheel  Zoom            Middle-drag ....... Pan
 """
+APP_VERSION = "4.1.0"
 
 
 class AboutDialog(tk.Toplevel):
@@ -283,7 +284,7 @@ class AboutDialog(tk.Toplevel):
         self.title("About")
         self.resizable(False, False)
         ttk.Label(self, padding=16, justify="center", text=(
-            "AI Gesture Drawing Studio  2.0\n\n"
+            f"AI Gesture Drawing Studio  {APP_VERSION}\n\n"
             "Real-time hand-gesture drawing with\n"
             "OpenCV + MediaPipe Tasks + NumPy + Tkinter.")).pack()
         ttk.Button(self, text="Close", command=self.destroy).pack(pady=(0, 12))

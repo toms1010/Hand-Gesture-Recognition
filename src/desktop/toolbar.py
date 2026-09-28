@@ -28,18 +28,28 @@ class Tooltip:
     def _show(self, _event=None):
         if self.tip is not None:
             return
-        x = self.widget.winfo_rootx() + 10
-        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
-        self.tip = tk.Toplevel(self.widget)
-        self.tip.wm_overrideredirect(True)
-        self.tip.wm_geometry(f"+{x}+{y}")
-        ttk.Label(self.tip, text=self.text, relief="solid", borderwidth=1,
-                  padding=(4, 2)).pack()
+        try:
+            x = self.widget.winfo_rootx() + 10
+            y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
+            self.tip = tk.Toplevel(self.widget)
+        except tk.TclError:
+            return
+        try:
+            self.tip.wm_overrideredirect(True)
+            self.tip.wm_geometry(f"+{x}+{y}")
+            ttk.Label(self.tip, text=self.text, relief="solid", borderwidth=1,
+                      padding=(4, 2)).pack()
+        except tk.TclError:
+            self.tip = None
 
     def _hide(self, _event=None):
         if self.tip is not None:
-            self.tip.destroy()
-            self.tip = None
+            try:
+                self.tip.destroy()
+            except tk.TclError:
+                pass
+            finally:
+                self.tip = None
 
 
 class Toolbar(ttk.Frame):

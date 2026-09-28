@@ -64,6 +64,11 @@ class GestureStudioApp(tk.Tk):
         self._poll_count = 0
         self._last_autosave_revision = -1
         self._last_autosave_time = 0.0
+        self._last_camera_ok: bool | None = None
+        self._closed = False
+        self._after_ids: set = set()
+        self._poll_after_id: str | None = None
+        self._autosave_after_id: str | None = None
         self._pan_drag: dict = {}
         self._build_style()
         self._build_menubar()
@@ -73,6 +78,7 @@ class GestureStudioApp(tk.Tk):
         self._build_main_area()
         self.statusbar = StatusBar(self)
         self.statusbar.pack(side="bottom", fill="x")
+        self.sidebar.set_debug_visible(self.show_debug)
         self._build_bindings()
         # Engine components (single ownership; worker guards with a lock).
         settings_store.apply(settings_store.load())
@@ -110,18 +116,38 @@ class GestureStudioApp(tk.Tk):
             mirror=config.MIRROR_FEED, show_landmarks=config.SHOW_LANDMARKS,
             include_canvas=not self.split_view)
         self.worker.start()
-        self.after(33, self._poll)
-        self.after(5000, self._autosave_tick)
+        self._poll_after_id = self._schedule(33, self._poll)
+        self._autosave_after_id = self._schedule(5000, self._autosave_tick)
+
+    def _schedule(self, delay_ms: int, callback) -> str | None:
+        """Schedule a callback and track its after id for clean shutdown."""
+        holder: dict = {}
+        def _run():
+            self._after_ids.discard(holder.get("id"))
+            callback()
+        try:
+            after_id = self.after(delay_ms, _run)
+        except tk.TclError:
+            return None
+        holder["id"] = after_id
+        self._after_ids.add(after_id)
+        return after_id
 
     # --- layout ---
     def _fit_to_screen(self) -> None:
         """Fill the available desktop (maximized; geometry fallback)."""
-        try:
-            self.update_idletasks()
-            self.state("zoomed")
-            return
-        except tk.TclError:
-            pass
+        # Linux WMs usually honour "-zoomed", Windows honours "zoomed".
+        for attempt in ("zoomed-attr", "zoomed-state"):
+            try:
+                if attempt == "zoomed-attr":
+                    self.update_idletasks()
+                    self.attributes("-zoomed", True)
+                else:
+                    self.update_idletasks()
+                    self.state("zoomed")
+                return
+            except tk.TclError:
+                continue
         try:
             sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
             self.geometry(f"{sw}x{max(550, sh - 60)}+0+0")
@@ -242,21 +268,23 @@ class GestureStudioApp(tk.Tk):
         self.bind("<q>", guarded(self.close))
         self.bind("<Q>", guarded(self.close))
         self.bind("<Escape>", guarded(self.cancel_gesture))
-        self.bind("<Control-z>", lambda _e: self.undo())
-        self.bind("<Control-y>", lambda _e: self.redo())
-        self.bind("<Control-Z>", lambda _e: self.redo())
-        self.bind("<Control-s>", lambda _e: self.save_project())
-        self.bind("<Control-S>", lambda _e: self.save_project())
-        self.bind("<Control-e>", lambda _e: self.export_jpg())
-        self.bind("<Control-E>", lambda _e: self.export_jpg())
-        self.bind("<Control-o>", lambda _e: self.open_project())
-        self.bind("<Control-O>", lambda _e: self.open_project())
+        self.bind("<Control-z>", guarded(self.undo))
+        self.bind("<Control-Z>", guarded(self.redo))
+        self.bind("<Control-y>", guarded(self.redo))
+        self.bind("<Control-Y>", guarded(self.redo))
+        self.bind("<Control-s>", guarded(self.save_project))
+        self.bind("<Control-S>", guarded(self.save_project))
+        self.bind("<Control-e>", guarded(self.export_jpg))
+        self.bind("<Control-E>", guarded(self.export_jpg))
+        self.bind("<Control-o>", guarded(self.open_project))
+        self.bind("<Control-O>", guarded(self.open_project))
         self.bind("<Control-n>", guarded(self.new_canvas))
         self.bind("<Control-N>", guarded(self.new_canvas))
-        self.bind("<Control-plus>", lambda _e: self.zoom_step(1.25))
-        self.bind("<Control-minus>", lambda _e: self.zoom_step(0.8))
+        self.bind("<Control-plus>", guarded(lambda: self.zoom_step(1.25)))
+        self.bind("<Control-minus>", guarded(lambda: self.zoom_step(0.8)))
         self.bind("<F11>", guarded(self.toggle_fullscreen))
         self.bind("<Delete>", guarded(self.delete_selected))
+        self.bind("<BackSpace>", guarded(self.delete_selected))
         self.bind("<space>", guarded(self.stamp))
         self.bind("<Tab>", guarded(self.cycle_tool))
         for key in ("c", "p", "b", "l", "o", "r", "t", "e", "v", "n", "g",
@@ -295,6 +323,8 @@ class GestureStudioApp(tk.Tk):
 
     # --- poll loop (GUI thread; throttled widget refresh) ---
     def _poll(self):
+        if self._closed:
+            return
         try:
             frame, snap = self.worker.latest()
             self._show_frames(frame)
@@ -309,8 +339,12 @@ class GestureStudioApp(tk.Tk):
             self._refresh_topbar(snap)
         except (RuntimeError, tk.TclError):
             pass  # shutting down / widgets destroyed
-        if self.winfo_exists():
-            self.after(33, self._poll)
+        if not self._closed:
+            try:
+                if self.winfo_exists():
+                    self._poll_after_id = self._schedule(33, self._poll)
+            except tk.TclError:
+                self._poll_after_id = None
 
     def _fit_label(self, label, img):
         avail_w = max(label.winfo_width(), 320)
@@ -360,15 +394,28 @@ class GestureStudioApp(tk.Tk):
         return bool(widget.winfo_manager())
 
     def _refresh_topbar(self, snap: dict):
-        if snap.get("camera_ok"):
-            self.cam_var.set("● Camera Connected")
-            self.cam_label.configure(foreground="#1a7f1a")
-            self.reconnect_btn.pack_forget()
-        else:
-            self.cam_var.set("⚠ Camera Disconnected")
-            self.cam_label.configure(foreground="#b00000")
-            self.reconnect_btn.pack(side="right", padx=2)
-        self.fps_var.set(f"FPS: {snap.get('fps', 0.0):.0f}")
+        camera_ok = bool(snap.get("camera_ok"))
+        if camera_ok != self._last_camera_ok:
+            self._last_camera_ok = camera_ok
+            if camera_ok:
+                self.cam_var.set("● Camera Connected")
+                self.cam_label.configure(foreground="#1a7f1a")
+                try:
+                    self.reconnect_btn.pack_forget()
+                except tk.TclError:
+                    pass
+            else:
+                self.cam_var.set("⚠ Camera Disconnected")
+                self.cam_label.configure(foreground="#b00000")
+                try:
+                    if not self.reconnect_btn.winfo_ismapped():
+                        self.reconnect_btn.pack(side="right", padx=2)
+                except tk.TclError:
+                    pass
+        try:
+            self.fps_var.set(f"FPS: {snap.get('fps', 0.0):.0f}")
+        except tk.TclError:
+            pass
 
     # --- toolbar callbacks (real engine actions) ---
     def set_tool(self, tool: Tool) -> None:
@@ -583,6 +630,8 @@ class GestureStudioApp(tk.Tk):
 
     def _autosave_tick(self) -> None:
         """Periodically persist the canvas (dirty-check via revision)."""
+        if self._closed:
+            return
         try:
             interval = max(5, int(getattr(config, "AUTOSAVE_SECONDS", 10)))
             revision = self.worker.apply(lambda: self.canvas.revision)
@@ -595,8 +644,14 @@ class GestureStudioApp(tk.Tk):
                 self._last_autosave_time = now
         except (OSError, RuntimeError, ValueError) as exc:
             applog.log_exception("Autosave failed", exc)
-        if self.winfo_exists():
-            self.after(5000, self._autosave_tick)
+        except tk.TclError:
+            pass
+        if not self._closed:
+            try:
+                if self.winfo_exists():
+                    self._autosave_after_id = self._schedule(5000, self._autosave_tick)
+            except tk.TclError:
+                self._autosave_after_id = None
 
     def _clear_autosave(self) -> None:
         try:
@@ -605,22 +660,30 @@ class GestureStudioApp(tk.Tk):
             pass
 
     def reconnect_camera(self) -> None:
-        """Retry opening the webcam."""
-        def _reconnect():
-            try:
-                camera = Camera(self.camera_id)
-            except CameraError as exc:
-                self._snap_camera_error(str(exc))
-                return False
-            try:
-                self.camera.release()
-            except Exception:
-                pass
+        """Retry opening the webcam (device open stays off the engine lock)."""
+        try:
+            camera = Camera(self.camera_id)
+        except CameraError as exc:
+            self._snap_camera_error(str(exc))
+            return
+
+        def _swap():
+            old = self.camera
             self.camera = camera
             self.worker.camera = camera
             return True
-        if self.worker.apply(_reconnect):
+
+        try:
+            old_camera = self.camera
+        except AttributeError:
+            old_camera = None
+        if self.worker.apply(_swap):
             self.camera_ok = True
+            if old_camera is not None and old_camera is not camera:
+                try:
+                    old_camera.release()
+                except Exception:
+                    pass
 
     def _snap_camera_error(self, message: str) -> None:
         with self.worker._lock:
@@ -713,7 +776,6 @@ class GestureStudioApp(tk.Tk):
                     applog.log_exception("Camera switch failed", exc)
                     self._snap_camera_error(str(exc))
         self.worker.apply(_apply)
-        self.worker.apply(_apply)
         self.show_debug = bool(overrides.get("DEBUG", self.show_debug))
         self.debug_var.set(self.show_debug)
         self.sidebar.set_debug_visible(self.show_debug)
@@ -739,11 +801,19 @@ class GestureStudioApp(tk.Tk):
 
     def _toggle_sidebar(self) -> None:
         self.show_sidebar = not self.show_sidebar
-        self.sidebar_var.set(self.show_sidebar)
-        if self.show_sidebar:
-            self.paned.add(self.sidebar, weight=0)
-        else:
-            self.paned.forget(self.sidebar)
+        try:
+            self.sidebar_var.set(self.show_sidebar)
+        except tk.TclError:
+            pass
+        try:
+            if self.show_sidebar:
+                if not bool(self.sidebar.winfo_manager()):
+                    self.paned.add(self.sidebar, weight=0)
+            else:
+                if bool(self.sidebar.winfo_manager()):
+                    self.paned.forget(self.sidebar)
+        except tk.TclError:
+            pass
 
     def _toggle_debug(self) -> None:
         self.show_debug = self.debug_var.get()
@@ -761,10 +831,13 @@ class GestureStudioApp(tk.Tk):
 
     def _guarded(self, fn):
         """Wrap a shortcut so typing in dialogs never triggers actions."""
-        def _handler(event):
-            if self._in_entry(event):
+        def _handler(event=None):
+            if event is not None and self._in_entry(event):
                 return None
-            return fn()
+            try:
+                return fn()
+            except tk.TclError:
+                return None
         return _handler
 
     def _on_letter(self, event) -> None:
@@ -810,7 +883,10 @@ class GestureStudioApp(tk.Tk):
         if self._in_entry(event):
             return
         from ui import PALETTE
-        idx = int(event.char) - 1
+        try:
+            idx = int(event.char) - 1
+        except (TypeError, ValueError):
+            return
         if 0 <= idx < len(PALETTE):
             self.set_color(PALETTE[idx])
 
@@ -824,13 +900,25 @@ class GestureStudioApp(tk.Tk):
 
     # --- shutdown: stop thread, release camera + MediaPipe, destroy ---
     def close(self) -> None:
-        """Stop processing, free resources, close the window."""
+        """Stop processing, free resources, close the window (idempotent)."""
+        if self._closed:
+            return
+        self._closed = True
+        for after_id in list(getattr(self, "_after_ids", set())):
+            try:
+                self.after_cancel(after_id)
+            except (tk.TclError, RuntimeError, ValueError):
+                pass
+        self._after_ids.clear()
+        self._poll_after_id = self._autosave_after_id = None
         try:
             self.worker.stop()
             self.worker.join(timeout=3.0)
         except RuntimeError:
             pass
-        for resource in (self.camera, self.tracker):
+        for resource in (getattr(self, "camera", None), getattr(self, "tracker", None)):
+            if resource is None:
+                continue
             try:
                 resource.release() if hasattr(resource, "release") else resource.close()
             except Exception:
@@ -839,12 +927,16 @@ class GestureStudioApp(tk.Tk):
             settings_store.save({
                 "BRUSH_SIZE": self.controller.brush_size,
                 "BRUSH_COLOR": list(self.controller.brush_color),
+                "BRUSH_OPACITY": float(self.controller.brush_opacity),
                 "DEBUG": self.show_debug,
             })
-        except OSError:
+        except (OSError, AttributeError):
             pass
         self._clear_autosave()  # clean exit: no recovery needed next launch
-        self.destroy()
+        try:
+            self.destroy()
+        except tk.TclError:
+            pass
 
 
 def main(camera_id: int = config.CAMERA_ID, camera=None) -> int:

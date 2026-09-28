@@ -387,9 +387,9 @@ class InteractionController:
         if abs(target - self.canvas.zoom) > 0.01:
             self.canvas.set_zoom(round(target, 2))
         if result.name in (LINE, SPHERE, RECTANGLE) and result.is_stable:
-            self.hint.text = f"Two-hand {result.name} - press T to stamp"
+            self.hint.text = f"Two-hand {result.name} - press SPACE to stamp"
         else:
-            self.hint.sticky = f"Zoom {self.canvas.zoom:.2f}x"
+            self.hint.text = f"Zoom {self.canvas.zoom:.2f}x"
 
     # --- stamping ---
     def stamp_preview(self, width: int = 0, height: int = 0) -> bool:

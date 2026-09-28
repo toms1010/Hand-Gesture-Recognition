@@ -6,7 +6,7 @@ from tkinter import ttk
 
 
 class StatusBar(ttk.Frame):
-    """Seven-field status bar; all values come from the engine snapshot."""
+    """Nine-field status bar; all values come from the engine snapshot."""
 
     FIELDS = (("Tool", 10), ("Gesture", 13), ("Hands", 5), ("Conf", 6),
               ("FPS", 5), ("Brush", 8), ("Smooth", 5), ("Canvas", 11),

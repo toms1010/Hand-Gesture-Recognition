@@ -130,13 +130,6 @@ class Canvas:
         self.zoom, self.pan_x, self.pan_y = 1.0, 0, 0
         self._dirty = True
 
-    # --- mutation (each pushes one undo command) ---
-    def _push_undo(self, command: tuple) -> None:
-        self._undo.append(command)
-        del self._undo[:-self.undo_limit]
-        self._redo.clear()
-        self._dirty = True
-
     def add_stroke(self, stroke: Stroke) -> int:
         """Append a finished stroke; returns its index. Ignores empties."""
         if not stroke.points:
@@ -330,6 +323,10 @@ class Canvas:
         """Replace contents with another canvas (for project loading)."""
         self.items = list(other.items)
         self.zoom = other.zoom
+        self.pan_x, self.pan_y = other.pan_x, other.pan_y
+        self.bg_mode = other.bg_mode
+        self.bg_custom = other.bg_custom
+        self.grid_size = other.grid_size
         self._undo.clear()
         self._redo.clear()
         self._dirty = True
@@ -503,19 +500,31 @@ class Canvas:
 
     # --- persistence ---
     def to_dict(self) -> dict:
-        """Serialize to a JSON-compatible dict (documented format)."""
+        """Serialize to a JSON-compatible dict (format v2).
+
+        v2 preserves per-stroke widths/opacity/timestamp, pan, background
+        and grid settings. The loader still reads v1 files (which lacked
+        those fields) so old projects keep working.
+        """
         serialized = []
         for item in self.items:
             if isinstance(item, Stroke):
                 serialized.append({"type": "stroke", "points": [list(p) for p in item.points],
                                    "color": list(item.color), "thickness": item.thickness,
-                                   "glow": item.glow, "tool": item.tool})
+                                   "glow": item.glow, "tool": item.tool,
+                                   "widths": list(item.widths),
+                                   "opacity": float(item.opacity),
+                                   "timestamp": float(item.timestamp)})
             elif isinstance(item, ShapeItem):
                 serialized.append({"type": "shape", "shape": item.shape,
                                    "p1": list(item.p1), "p2": list(item.p2),
                                    "color": list(item.color), "thickness": item.thickness,
-                                   "glow": item.glow})
-        return {"version": 1, "zoom": self.zoom, "items": serialized}
+                                   "glow": item.glow,
+                                   "opacity": float(item.opacity)})
+        return {"version": 2, "zoom": self.zoom, "pan": [self.pan_x, self.pan_y],
+                "bg_mode": self.bg_mode, "bg_custom": list(self.bg_custom),
+                "grid_size": self.grid_size,
+                "items": serialized}
 
     def save_project(self, path: str | Path) -> Path:
         """Save the vector project as JSON."""
@@ -525,12 +534,28 @@ class Canvas:
 
     @classmethod
     def load_project(cls, path: str | Path) -> "Canvas":
-        """Load a project saved with :meth:`save_project`."""
+        """Load a project saved with :meth:`save_project` (v1 + v2)."""
         data = json.loads(Path(path).read_text(encoding="utf-8"))
         canvas = cls()
-        canvas.zoom = float(data.get("zoom", 1.0))
+        canvas.zoom = min(4.0, max(0.25, float(data.get("zoom", 1.0))))
         pan = data.get("pan", [0, 0])
-        canvas.pan_x, canvas.pan_y = int(pan[0]), int(pan[1])
+        try:
+            canvas.pan_x, canvas.pan_y = int(pan[0]), int(pan[1])
+        except (TypeError, ValueError, IndexError):
+            canvas.pan_x, canvas.pan_y = 0, 0
+        if "bg_mode" in data:
+            canvas.bg_mode = str(data.get("bg_mode") or canvas.bg_mode)
+        try:
+            custom = data.get("bg_custom")
+            if custom is not None:
+                canvas.bg_custom = tuple(int(v) for v in custom)
+        except (TypeError, ValueError):
+            pass
+        try:
+            if "grid_size" in data:
+                canvas.grid_size = max(4, int(data.get("grid_size")))
+        except (TypeError, ValueError):
+            pass
         for entry in data.get("items", []):
             if entry.get("type") == "stroke":
                 points = [tuple(p) for p in entry.get("points", [])]

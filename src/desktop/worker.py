@@ -84,15 +84,18 @@ class EngineWorker(threading.Thread):
         """Swap the camera device (GUI thread; runs under the engine lock).
 
         Raises CameraError on failure; the old camera is kept.
+        The device is opened *outside* the lock so a slow driver never
+        stalls the engine loop; only the pointer swap is locked.
         """
         from camera import Camera
+        camera = Camera(camera_id, width=width, height=height, fps=fps)
         with self._lock:
-            camera = Camera(camera_id, width=width, height=height, fps=fps)
-            try:
-                self.camera.release()
-            except Exception:
-                pass
+            old = self.camera
             self.camera = camera
+        try:
+            old.release()
+        except Exception:
+            pass
 
     def latest(self):
         """Return (annotated_frame_or_None, snapshot_dict_copy)."""
@@ -105,7 +108,13 @@ class EngineWorker(threading.Thread):
         hands: list = []
         stable = GestureResult()
         while not self._stop.is_set():
-            frame = self.camera.get_frame()
+            with self._lock:
+                camera = self.camera
+                mirror = self.mirror
+            try:
+                frame = camera.get_frame() if camera is not None else None
+            except Exception:
+                frame = None
             if frame is None:
                 with self._lock:
                     self._snap["camera_ok"] = False
@@ -113,7 +122,7 @@ class EngineWorker(threading.Thread):
                     self._frame = None
                 self._stop.wait(0.25)
                 continue
-            if self.mirror:
+            if mirror:
                 frame = cv2.flip(frame, 1)
             height, width = frame.shape[:2]
             started = time.perf_counter()
